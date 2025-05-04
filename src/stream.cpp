@@ -231,8 +231,8 @@ namespace stream {
   struct audio_fec_packet_t {
     RTP_PACKET rtp;
 
-    // Add a custom AUDIO_FEC_HEADER struct with headerType field
-    struct {\n      std::uint8_t headerType;\n      std::uint8_t fecShardIndex;\n      std::uint8_t payloadType;\n      std::uint16_t baseSequenceNumber;\n      std::uint32_t baseTimestamp;\n      std::uint32_t ssrc;\n    } fecHeader;
+    // Custom AUDIO_FEC_HEADER with headerType field
+    struct {     std::uint8_t headerType;\n      std::uint8_t fecShardIndex;\n      std::uint8_t payloadType;\n      std::uint16_t baseSequenceNumber;\n      std::uint32_t baseTimestamp;\n      std::uint32_t ssrc;\n    } fecHeader;
   };
 
 #pragma pack(pop)
@@ -1914,6 +1914,9 @@ namespace stream {
         if (rtsp_launch_session) {
           controller_only = rtsp_launch_session->controller_only;
         }
+        else {
+          BOOST_LOG(debug) << "Could not retrieve launch session for ID " << session.launch_session_id << ", assuming normal mode";
+        }
       }
 
       if (!controller_only) {
@@ -1998,6 +2001,9 @@ namespace stream {
         auto rtsp_launch_session = rtsp_stream::get_pending_session(session.launch_session_id);
         if (rtsp_launch_session) {
           controller_only = rtsp_launch_session->controller_only;
+        }
+        else {
+          BOOST_LOG(debug) << "Could not retrieve launch session for ID " << session.launch_session_id << ", assuming normal mode";
         }
       }
 
