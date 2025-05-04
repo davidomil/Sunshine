@@ -605,6 +605,8 @@ namespace rtsp_stream {
     tcp::acceptor acceptor {io_context};
 
     std::shared_ptr<socket_t> next_socket;
+
+    safe::event_t<std::shared_ptr<launch_session_t>> launch_event;
   };
 
   rtsp_server_t server {};

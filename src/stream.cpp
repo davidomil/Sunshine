@@ -2019,22 +2019,18 @@ namespace stream {
         return 0;  // Return success without starting video/audio threads
       }
 
-      // Thread executing input event listeners and broadcasting updates
-      std::thread broadcast_thread {
-        [=, &session]() { broadcast.run(session); }
-      };
-
-      broadcast_thread.detach();
+      // Start the session state
+      session.state.store(state_e::RUNNING, std::memory_order_relaxed);
 
       BOOST_LOG(debug) << "Starting video"sv;
 
-      auto video_thread = std::thread { [&session]() { session.video.capture(&session); } };
+      auto video_thread = std::thread { videoThread, &session };
       session.videoThread = std::move(video_thread);
 
       if (session.config.audio_sink) {
         BOOST_LOG(debug) << "Starting audio"sv;
 
-        auto audio_thread = std::thread { [&session]() { session.audio.capture(&session); } };
+        auto audio_thread = std::thread { audioThread, &session };
         session.audioThread = std::move(audio_thread);
       }
 
