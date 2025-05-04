@@ -466,7 +466,8 @@ namespace confighttp {
         "exclude-global-prep-cmd",
         "elevated",
         "auto-detach",
-        "wait-all"
+        "wait-all",
+        "controller-only"
       };
 
       // List of keys to convert to integers

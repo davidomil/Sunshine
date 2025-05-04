@@ -531,7 +531,18 @@ namespace rtsp_stream {
       return _session_slots->size();
     }
 
-    safe::event_t<std::shared_ptr<launch_session_t>> launch_event;
+    /**
+     * @brief Get pending session by ID.
+     * @param launch_session_id The session ID to look up.
+     * @return Pointer to the session if found, nullptr otherwise.
+     */
+    std::shared_ptr<launch_session_t> get_pending_session(uint32_t launch_session_id) {
+      auto launch_session = launch_event.view(0s);
+      if (launch_session && launch_session->id == launch_session_id) {
+        return launch_session;
+      }
+      return nullptr;
+    }
 
     /**
      * @brief Clear launch sessions.
@@ -604,6 +615,10 @@ namespace rtsp_stream {
 
   void launch_session_clear(uint32_t launch_session_id) {
     server.session_clear(launch_session_id);
+  }
+
+  std::shared_ptr<launch_session_t> get_pending_session(uint32_t launch_session_id) {
+    return server.get_pending_session(launch_session_id);
   }
 
   int session_count() {

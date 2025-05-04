@@ -1903,10 +1903,29 @@ namespace stream {
         task_pool.cancel(force_kill);
       });
 
-      BOOST_LOG(debug) << "Waiting for video to end..."sv;
-      session.videoThread.join();
-      BOOST_LOG(debug) << "Waiting for audio to end..."sv;
-      session.audioThread.join();
+      // Check if this is a controller-only mode session
+      bool controller_only = false;
+      {
+        auto rtsp_launch_session = rtsp_stream::server.get_pending_session(session.launch_session_id);
+        if (rtsp_launch_session) {
+          controller_only = rtsp_launch_session->controller_only;
+        }
+      }
+
+      if (!controller_only) {
+        BOOST_LOG(debug) << "Waiting for video to end..."sv;
+        if (session.videoThread.joinable()) {
+          session.videoThread.join();
+        }
+        
+        BOOST_LOG(debug) << "Waiting for audio to end..."sv;
+        if (session.audioThread.joinable()) {
+          session.audioThread.join();
+        }
+      } else {
+        BOOST_LOG(debug) << "Controller-only mode: skipping video and audio thread joining"sv;
+      }
+
       BOOST_LOG(debug) << "Waiting for control to end..."sv;
       session.controlEnd.view();
       // Reset input on session stop to avoid stuck repeated keys
@@ -1961,12 +1980,26 @@ namespace stream {
 
       session.pingTimeout = std::chrono::steady_clock::now() + config::stream.ping_timeout;
 
-      session.audioThread = std::thread {audioThread, &session};
-      session.videoThread = std::thread {videoThread, &session};
+      // For controller-only mode, we only set up control connection, not audio/video threads
+      bool controller_only = false;
+      {
+        auto rtsp_launch_session = rtsp_stream::server.get_pending_session(session.launch_session_id);
+        if (rtsp_launch_session) {
+          controller_only = rtsp_launch_session->controller_only;
+        }
+      }
+
+      if (!controller_only) {
+        session.audioThread = std::thread {audioThread, &session};
+        session.videoThread = std::thread {videoThread, &session};
+      } else {
+        BOOST_LOG(info) << "Controller-only mode: not starting audio and video threads"sv;
+      }
 
       session.state.store(state_e::RUNNING, std::memory_order_relaxed);
 
       // If this is the first session, invoke the platform callbacks
+      static std::atomic<int> running_sessions = 0;
       if (++running_sessions == 1) {
         platf::streaming_will_start();
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
@@ -1996,55 +2029,57 @@ namespace stream {
         false
       };
 
-      session->video.idr_events = mail->event<bool>(mail::idr);
-      session->video.invalidate_ref_frames_events = mail->event<std::pair<int64_t, int64_t>>(mail::invalidate_ref_frames);
-      session->video.lowseq = 0;
-      session->video.ping_payload = launch_session.av_ping_payload;
-      if (config.encryptionFlagsEnabled & SS_ENC_VIDEO) {
-        BOOST_LOG(info) << "Video encryption enabled"sv;
-        session->video.cipher = crypto::cipher::gcm_t {
-          launch_session.gcm_key,
-          false
+      // For controller-only mode, we don't set up video and audio streaming
+      if (!launch_session.controller_only) {
+        session->video.idr_events = mail->event<bool>(mail::idr);
+        session->video.invalidate_ref_frames_events = mail->event<std::pair<int64_t, int64_t>>(mail::invalidate_ref_frames);
+        session->video.lowseq = 0;
+        session->video.ping_payload = launch_session.av_ping_payload;
+        if (config.encryptionFlagsEnabled & SS_ENC_VIDEO) {
+          BOOST_LOG(info) << "Video encryption enabled"sv;
+          session->video.cipher = crypto::cipher::gcm_t {
+            launch_session.gcm_key,
+            false
+          };
+          session->video.gcm_iv_counter = 0;
+        }
+
+        constexpr auto max_block_size = crypto::cipher::round_to_pkcs7_padded(2048);
+
+        util::buffer_t<char> shards {RTPA_TOTAL_SHARDS * max_block_size};
+        util::buffer_t<uint8_t *> shards_p {RTPA_TOTAL_SHARDS};
+
+        for (auto x = 0; x < RTPA_TOTAL_SHARDS; ++x) {
+          shards_p[x] = (uint8_t *) &shards[x * max_block_size];
+        }
+
+        session->audio.shards = std::move(shards);
+        session->audio.shards_p = std::move(shards_p);
+
+        session->audio.fec_packet.fecHeader.headerType = util::endian::little(FEC_HEADER_TYPE);
+        session->audio.fec_packet.fecHeader.payloadType = util::endian::little(0);
+        session->audio.fec_packet.fecHeader.ssrc = util::endian::little(launch_session.id);
+
+        session->audio.sequenceNumber = 0;
+        session->audio.timestamp = 0;
+
+        // avRiKeyId == util::endian::big(First (sizeof(avRiKeyId)) bytes of launch_session->iv)
+        session->audio.avRiKeyId = 0;
+        uint8_t *avRiKeyId_p = (uint8_t *) &session->audio.avRiKeyId;
+        for (int x = 0; x < sizeof(session->audio.avRiKeyId); ++x) {
+          avRiKeyId_p[x] = launch_session.iv[x];
+        }
+
+        session->audio.cipher = crypto::cipher::cbc_t {
+          launch_session.gcm_key
         };
-        session->video.gcm_iv_counter = 0;
+        session->audio.ping_payload = launch_session.av_ping_payload;
+      } else {
+        BOOST_LOG(info) << "Controller-only mode: not setting up video and audio streaming"sv;
       }
 
-      constexpr auto max_block_size = crypto::cipher::round_to_pkcs7_padded(2048);
-
-      util::buffer_t<char> shards {RTPA_TOTAL_SHARDS * max_block_size};
-      util::buffer_t<uint8_t *> shards_p {RTPA_TOTAL_SHARDS};
-
-      for (auto x = 0; x < RTPA_TOTAL_SHARDS; ++x) {
-        shards_p[x] = (uint8_t *) &shards[x * max_block_size];
-      }
-
-      // Audio FEC spans multiple audio packets,
-      // therefore its session specific
-      session->audio.shards = std::move(shards);
-      session->audio.shards_p = std::move(shards_p);
-
-      session->audio.fec_packet.rtp.header = 0x80;
-      session->audio.fec_packet.rtp.packetType = 127;
-      session->audio.fec_packet.rtp.timestamp = 0;
-      session->audio.fec_packet.rtp.ssrc = 0;
-
-      session->audio.fec_packet.fecHeader.payloadType = 97;
-      session->audio.fec_packet.fecHeader.ssrc = 0;
-
-      session->audio.cipher = crypto::cipher::cbc_t {
-        launch_session.gcm_key,
-        true
-      };
-
-      session->audio.ping_payload = launch_session.av_ping_payload;
-      session->audio.avRiKeyId = util::endian::big(*(std::uint32_t *) launch_session.iv.data());
-      session->audio.sequenceNumber = 0;
-      session->audio.timestamp = 0;
-
-      session->control.peer = nullptr;
+      session->mail = mail;
       session->state.store(state_e::STOPPED, std::memory_order_relaxed);
-
-      session->mail = std::move(mail);
 
       return session;
     }

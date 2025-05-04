@@ -34,6 +34,7 @@ namespace rtsp_stream {
     std::string surround_params;
     bool enable_hdr;
     bool enable_sops;
+    bool controller_only;  // Whether this client is controller-only
 
     std::optional<crypto::cipher::gcm_t> rtsp_cipher;
     std::string rtsp_url_scheme;
@@ -58,6 +59,13 @@ namespace rtsp_stream {
    * @brief Terminates all running streaming sessions.
    */
   void terminate_sessions();
+
+  /**
+   * @brief Get pending session by ID.
+   * @param launch_session_id The session ID to look up.
+   * @return Pointer to the session if found, nullptr otherwise.
+   */
+  std::shared_ptr<launch_session_t> get_pending_session(uint32_t launch_session_id);
 
   void rtpThread();
 

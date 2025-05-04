@@ -40,6 +40,8 @@
     "cmd_note": "If the path to the command executable contains spaces, you must enclose it in quotes.",
     "cmd_prep_desc": "A list of commands to be run before/after this application. If any of the prep-commands fail, starting the application is aborted.",
     "cmd_prep_name": "Command Preparations",
+    "controller_only": "Controller-only Mode",
+    "controller_only_desc": "When enabled, this application will only accept controller input without streaming video/audio. This allows a second device to be used as a dedicated controller.",
     "covers_found": "Covers Found",
     "delete": "Delete",
     "detached_cmds": "Detached Commands",
