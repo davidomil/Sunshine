@@ -232,7 +232,14 @@ namespace stream {
     RTP_PACKET rtp;
 
     // Custom AUDIO_FEC_HEADER with headerType field
-    struct {     std::uint8_t headerType;\n      std::uint8_t fecShardIndex;\n      std::uint8_t payloadType;\n      std::uint16_t baseSequenceNumber;\n      std::uint32_t baseTimestamp;\n      std::uint32_t ssrc;\n    } fecHeader;
+    struct {
+      std::uint8_t headerType;
+      std::uint8_t fecShardIndex;
+      std::uint8_t payloadType;
+      std::uint16_t baseSequenceNumber;
+      std::uint32_t baseTimestamp;
+      std::uint32_t ssrc;
+    } fecHeader;
   };
 
 #pragma pack(pop)
