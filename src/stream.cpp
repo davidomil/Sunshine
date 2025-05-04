@@ -79,6 +79,8 @@ using namespace std::literals;
 
 namespace stream {
 
+  constexpr auto FEC_HEADER_TYPE = 0x06;
+
   enum class socket_e : int {
     video,  ///< Video
     audio  ///< Audio
@@ -228,7 +230,9 @@ namespace stream {
 
   struct audio_fec_packet_t {
     RTP_PACKET rtp;
-    AUDIO_FEC_HEADER fecHeader;
+
+    // Add a custom AUDIO_FEC_HEADER struct with headerType field
+    struct {\n      std::uint8_t headerType;\n      std::uint8_t fecShardIndex;\n      std::uint8_t payloadType;\n      std::uint16_t baseSequenceNumber;\n      std::uint32_t baseTimestamp;\n      std::uint32_t ssrc;\n    } fecHeader;
   };
 
 #pragma pack(pop)
@@ -1899,31 +1903,39 @@ namespace stream {
       };
       auto force_kill = task_pool.pushDelayed(task, 10s).task_id;
       auto fg = util::fail_guard([&force_kill]() {
-        // Cancel the kill task if we manage to return from this function
+        // Cancel the kill task if we manage to finish joining normally
         task_pool.cancel(force_kill);
       });
 
       // Check if this is a controller-only mode session
       bool controller_only = false;
       {
-        auto rtsp_launch_session = rtsp_stream::server.get_pending_session(session.launch_session_id);
+        auto rtsp_launch_session = rtsp_stream::get_pending_session(session.launch_session_id);
         if (rtsp_launch_session) {
           controller_only = rtsp_launch_session->controller_only;
         }
       }
 
       if (!controller_only) {
-        BOOST_LOG(debug) << "Waiting for video to end..."sv;
-        if (session.videoThread.joinable()) {
-          session.videoThread.join();
-        }
-        
-        BOOST_LOG(debug) << "Waiting for audio to end..."sv;
+        // Join threads
         if (session.audioThread.joinable()) {
           session.audioThread.join();
         }
-      } else {
-        BOOST_LOG(debug) << "Controller-only mode: skipping video and audio thread joining"sv;
+
+        if (session.videoThread.joinable()) {
+          session.videoThread.join();
+        }
+      }
+
+      // Remove session if still in session list
+      if (session.broadcast_ref) {
+        auto lg = session.broadcast_ref->control_server._sessions.lock();
+        auto &sessions = *session.broadcast_ref->control_server._sessions;
+        auto pos = std::find(std::begin(sessions), std::end(sessions), &session);
+
+        if (pos != std::end(sessions)) {
+          sessions.erase(pos);
+        }
       }
 
       BOOST_LOG(debug) << "Waiting for control to end..."sv;
@@ -1980,31 +1992,37 @@ namespace stream {
 
       session.pingTimeout = std::chrono::steady_clock::now() + config::stream.ping_timeout;
 
-      // For controller-only mode, we only set up control connection, not audio/video threads
+      // Check if this is a controller-only session
       bool controller_only = false;
       {
-        auto rtsp_launch_session = rtsp_stream::server.get_pending_session(session.launch_session_id);
+        auto rtsp_launch_session = rtsp_stream::get_pending_session(session.launch_session_id);
         if (rtsp_launch_session) {
           controller_only = rtsp_launch_session->controller_only;
         }
       }
 
-      if (!controller_only) {
-        session.audioThread = std::thread {audioThread, &session};
-        session.videoThread = std::thread {videoThread, &session};
-      } else {
-        BOOST_LOG(info) << "Controller-only mode: not starting audio and video threads"sv;
+      if (controller_only) {
+        BOOST_LOG(info) << "Starting session in controller-only mode"sv;
+        return 0;  // Return success without starting video/audio threads
       }
 
-      session.state.store(state_e::RUNNING, std::memory_order_relaxed);
+      // Thread executing input event listeners and broadcasting updates
+      std::thread broadcast_thread {
+        [=, &session]() { broadcast.run(session); }
+      };
 
-      // If this is the first session, invoke the platform callbacks
-      static std::atomic<int> running_sessions = 0;
-      if (++running_sessions == 1) {
-        platf::streaming_will_start();
-#if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
-        system_tray::update_tray_playing(proc::proc.get_last_run_app_name());
-#endif
+      broadcast_thread.detach();
+
+      BOOST_LOG(debug) << "Starting video"sv;
+
+      auto video_thread = std::thread { [&session]() { session.video.capture(&session); } };
+      session.videoThread = std::move(video_thread);
+
+      if (session.config.audio_sink) {
+        BOOST_LOG(debug) << "Starting audio"sv;
+
+        auto audio_thread = std::thread { [&session]() { session.audio.capture(&session); } };
+        session.audioThread = std::move(audio_thread);
       }
 
       return 0;
